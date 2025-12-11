@@ -21,7 +21,7 @@ Market indicator that tracks Polymarket prediction odds correlation to eventual 
 Run the helper script to pull fresh datasets:
 
 ```bash
-python scripts/fetch_all_data.py --pair XBTUSD --interval 60 --limit 500
+python scripts/fetch_all_data.py --pair XBTUSD --interval 60 --limit 500 --pages 4
 ```
 
 Options of note:
