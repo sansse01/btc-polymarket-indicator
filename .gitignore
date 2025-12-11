@@ -1,3 +1,13 @@
 __pycache__/
 *.pyc
+
+# Raw and generated datasets (binary artifacts should not be committed)
 data/raw/
+analysis/demo_data/
+
+# Analysis plots and other generated media
+analysis/plots/
+*.png
+*.jpg
+*.jpeg
+/my_changes.patch
