@@ -85,14 +85,61 @@ def _extract_outcome_price(value: object) -> float | None:
     return None
 
 
-def load_polymarket_markets(csv_path: Path) -> pd.DataFrame:
+def _read_polymarket_csv(
+    csv_path: Path, encoding: str | None = None, errors: str = "strict"
+) -> pd.DataFrame:
+    """Read a Polymarket CSV, falling back across common encodings.
+
+    Windows-exported CSVs occasionally include smart quotes or other characters
+    that are not UTF-8 friendly. Try the requested encoding first, then fall
+    back through a few common options (optionally allowing replacement bytes)
+    before surfacing a clear error.
+    """
+
+    encodings: list[str | None] = []
+    if encoding:
+        encodings.append(encoding)
+    encodings.extend(["utf-8", "cp1252", "latin-1"])
+
+    attempted: list[str] = []
+    for enc in encodings:
+        if enc in attempted:
+            continue
+        try:
+            return pd.read_csv(csv_path, encoding=enc, encoding_errors=errors)
+        except UnicodeDecodeError:
+            attempted.append(enc)
+            continue
+
+    if errors != "replace":
+        # Last-ditch attempt: accept replacement characters so users can keep going.
+        for enc in encodings:
+            if enc in attempted:
+                continue
+            try:
+                return pd.read_csv(csv_path, encoding=enc, encoding_errors="replace")
+            except UnicodeDecodeError:
+                attempted.append(enc)
+                continue
+
+    tried = ", ".join(enc for enc in attempted if enc)
+    raise ValueError(
+        f"Unable to decode {csv_path} using encodings: {tried}. "
+        "Pass --polymarket-encoding to specify an explicit codec or "
+        "--polymarket-errors replace to coerce unexpected bytes."
+    )
+
+
+def load_polymarket_markets(
+    csv_path: Path, encoding: str | None = None, errors: str = "strict"
+) -> pd.DataFrame:
     """Load Polymarket BTC market snapshots and return a time-indexed frame.
 
     The loader searches for a timestamp column and a probability/price column.
     If both best bid and best ask are available it will use their mid-price.
     """
 
-    df = pd.read_csv(csv_path)
+    df = _read_polymarket_csv(csv_path, encoding=encoding, errors=errors)
 
     time_column = next((col for col in POLY_TIME_COLUMNS if col in df.columns), None)
     if time_column is None:
@@ -148,13 +195,27 @@ def infer_interval_minutes(index: pd.DatetimeIndex) -> int:
 
 
 def resample_polymarket(probabilities: pd.Series, target_index: pd.DatetimeIndex, interval_minutes: int) -> pd.Series:
-    """Resample Polymarket series to the Kraken time grid with ffill/bfill."""
+    """Resample Polymarket series to the Kraken time grid with ffill/bfill.
+
+    Some Polymarket exports contain only sparse timestamps (e.g., market
+    creation or resolution moments). Start by resampling to a regular grid and
+    prefer nearby values within one interval. If everything is still ``NaN``
+    after that conservative match, fall back to the nearest neighbor across the
+    full series so correlations can proceed instead of silently returning
+    empties.
+    """
 
     frequency = f"{interval_minutes}min"
     resampled = probabilities.resample(frequency).ffill().bfill()
 
     # Align to Kraken timestamps; use nearest within one interval for robustness
     aligned = resampled.reindex(target_index, method="nearest", tolerance=pd.Timedelta(minutes=interval_minutes))
+
+    if aligned.isna().all():
+        # If no match landed within the tolerance window, relax to the nearest
+        # observation (even if hours/days away) and then fill gaps.
+        aligned = resampled.reindex(target_index, method="nearest")
+
     if aligned.isna().any():
         aligned = aligned.ffill().bfill()
     return aligned
@@ -228,6 +289,9 @@ def compute_correlations(
     btc_returns = btc_prices.pct_change().dropna()
     poly_changes = polymarket_probs.pct_change().dropna()
     combined = pd.concat([btc_returns.rename("btc_returns"), poly_changes.rename("poly_changes")], axis=1).dropna()
+
+    if combined.empty:
+        return pd.Series({"pearson": np.nan}), {}, pd.DataFrame(columns=["correlation"], index=pd.Index([], name="lag"))
 
     base_correlation = combined["btc_returns"].corr(combined["poly_changes"])
 
@@ -324,6 +388,19 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_POLYMARKET_PATH,
         help="Path to Polymarket BTC markets CSV",
     )
+    parser.add_argument(
+        "--polymarket-encoding",
+        type=str,
+        default=None,
+        help="Optional text encoding for Polymarket CSV (auto-tries utf-8, cp1252, latin-1)",
+    )
+    parser.add_argument(
+        "--polymarket-errors",
+        type=str,
+        choices=["strict", "replace", "ignore"],
+        default="strict",
+        help="Encoding error strategy for Polymarket CSV (pandas encoding_errors option)",
+    )
     parser.add_argument("--plots-dir", type=Path, default=PLOTS_DIR, help="Directory for plot outputs")
     parser.add_argument("--max-lag", type=int, default=12, help="Lag window in intervals for cross-correlation")
     parser.add_argument(
@@ -378,7 +455,9 @@ def run_visualization(args: argparse.Namespace) -> None:
         )
 
     kraken_df = load_kraken_ohlc(kraken_path)
-    polymarket_df = load_polymarket_markets(polymarket_path)
+    polymarket_df = load_polymarket_markets(
+        polymarket_path, encoding=args.polymarket_encoding, errors=args.polymarket_errors
+    )
 
     interval_minutes = infer_interval_minutes(kraken_df.index)
 
@@ -402,9 +481,16 @@ def run_visualization(args: argparse.Namespace) -> None:
 
     print("Correlation summary:")
     print(f"  Pearson correlation between returns: {pearson['pearson']:.4f}")
-    for hours, series in rolling.items():
-        latest = series.dropna().iloc[-1] if not series.dropna().empty else np.nan
-        print(f"  Latest rolling {hours}h correlation: {latest:.4f}")
+
+    if not rolling:
+        print(
+            "  No overlapping return windows found. Ensure Polymarket timestamps "
+            "cover the same period as Kraken data or try looser alignment."
+        )
+    else:
+        for hours, series in rolling.items():
+            latest = series.dropna().iloc[-1] if not series.dropna().empty else np.nan
+            print(f"  Latest rolling {hours}h correlation: {latest:.4f}")
 
     best_lag = lag_df["correlation"].dropna().idxmax() if not lag_df["correlation"].dropna().empty else None
     if best_lag is not None:
