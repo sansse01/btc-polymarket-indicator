@@ -45,8 +45,6 @@ Flags of interest:
 - `--plots-dir`: Where to save the overlay, rolling correlation, and lead/lag bar plots (default: `analysis/plots/`).
 - `--rolling-windows`: Comma-separated window sizes (hours) for rolling correlations (default: `1,4`).
 - `--max-lag`: Number of intervals to test in each direction for lead/lag analysis (default: 12 intervals).
-- `--polymarket-encoding`: Force a text encoding if your Polymarket CSV is not UTF-8 (the script auto-tries UTF-8, CP1252, and Latin-1).
-- `--polymarket-errors`: How to handle encoding errors (`strict`, `replace`, or `ignore`). If a Windows-exported file keeps failing to decode, rerun with `--polymarket-errors replace` to coerce any stray bytes.
 - `--show`: Open the plots interactively after saving them.
 
 No data yet? Use the built-in demo generator:
