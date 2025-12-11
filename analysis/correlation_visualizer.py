@@ -195,13 +195,27 @@ def infer_interval_minutes(index: pd.DatetimeIndex) -> int:
 
 
 def resample_polymarket(probabilities: pd.Series, target_index: pd.DatetimeIndex, interval_minutes: int) -> pd.Series:
-    """Resample Polymarket series to the Kraken time grid with ffill/bfill."""
+    """Resample Polymarket series to the Kraken time grid with ffill/bfill.
+
+    Some Polymarket exports contain only sparse timestamps (e.g., market
+    creation or resolution moments). Start by resampling to a regular grid and
+    prefer nearby values within one interval. If everything is still ``NaN``
+    after that conservative match, fall back to the nearest neighbor across the
+    full series so correlations can proceed instead of silently returning
+    empties.
+    """
 
     frequency = f"{interval_minutes}min"
     resampled = probabilities.resample(frequency).ffill().bfill()
 
     # Align to Kraken timestamps; use nearest within one interval for robustness
     aligned = resampled.reindex(target_index, method="nearest", tolerance=pd.Timedelta(minutes=interval_minutes))
+
+    if aligned.isna().all():
+        # If no match landed within the tolerance window, relax to the nearest
+        # observation (even if hours/days away) and then fill gaps.
+        aligned = resampled.reindex(target_index, method="nearest")
+
     if aligned.isna().any():
         aligned = aligned.ffill().bfill()
     return aligned
@@ -275,6 +289,9 @@ def compute_correlations(
     btc_returns = btc_prices.pct_change().dropna()
     poly_changes = polymarket_probs.pct_change().dropna()
     combined = pd.concat([btc_returns.rename("btc_returns"), poly_changes.rename("poly_changes")], axis=1).dropna()
+
+    if combined.empty:
+        return pd.Series({"pearson": np.nan}), {}, pd.DataFrame(columns=["correlation"], index=pd.Index([], name="lag"))
 
     base_correlation = combined["btc_returns"].corr(combined["poly_changes"])
 
@@ -464,9 +481,16 @@ def run_visualization(args: argparse.Namespace) -> None:
 
     print("Correlation summary:")
     print(f"  Pearson correlation between returns: {pearson['pearson']:.4f}")
-    for hours, series in rolling.items():
-        latest = series.dropna().iloc[-1] if not series.dropna().empty else np.nan
-        print(f"  Latest rolling {hours}h correlation: {latest:.4f}")
+
+    if not rolling:
+        print(
+            "  No overlapping return windows found. Ensure Polymarket timestamps "
+            "cover the same period as Kraken data or try looser alignment."
+        )
+    else:
+        for hours, series in rolling.items():
+            latest = series.dropna().iloc[-1] if not series.dropna().empty else np.nan
+            print(f"  Latest rolling {hours}h correlation: {latest:.4f}")
 
     best_lag = lag_df["correlation"].dropna().idxmax() if not lag_df["correlation"].dropna().empty else None
     if best_lag is not None:
