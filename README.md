@@ -45,8 +45,6 @@ Flags of interest:
 - `--plots-dir`: Where to save the overlay, rolling correlation, and lead/lag bar plots (default: `analysis/plots/`).
 - `--rolling-windows`: Comma-separated window sizes (hours) for rolling correlations (default: `1,4`).
 - `--max-lag`: Number of intervals to test in each direction for lead/lag analysis (default: 12 intervals).
-- `--polymarket-encoding`: Force a text encoding if your Polymarket CSV is not UTF-8 (the script auto-tries UTF-8, CP1252, and Latin-1).
-- `--polymarket-errors`: How to handle encoding errors (`strict`, `replace`, or `ignore`). If a Windows-exported file keeps failing to decode, rerun with `--polymarket-errors replace` to coerce any stray bytes.
 - `--show`: Open the plots interactively after saving them.
 
 No data yet? Use the built-in demo generator:
@@ -56,5 +54,3 @@ python analysis/correlation_visualizer.py --demo-data --demo-length 240 --demo-i
 ```
 
 This writes synthetic Kraken and Polymarket CSVs into `analysis/demo_data/` and produces the same plots, which are handy for validating the workflow before hitting live APIs.
-
-Sparse Polymarket exports (e.g., single snapshots per market) can leave few points to correlate against Kraken candles. The visualizer now falls back to the nearest available timestamp if it cannot find values within one interval and will print a warning when no overlapping windows are found. For best results, fetch time-series snapshots that overlap your Kraken date range.
