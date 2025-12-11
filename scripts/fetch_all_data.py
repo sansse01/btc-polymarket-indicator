@@ -14,7 +14,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from data.kraken_client import get_kraken_ohlc
-from data.polymarket_client import filter_btc_markets, get_polymarket_markets
+from data.polymarket_client import filter_btc_markets, get_all_polymarket_markets
 
 RAW_DATA_DIR = ROOT_DIR / "data" / "raw"
 
@@ -46,14 +46,31 @@ def fetch_and_save_kraken(
 def fetch_and_save_polymarket(
     limit: int,
     offset: int,
+    pages: int | None,
     closed: bool | None,
     proxies: Dict[str, object] | None,
     output: Path,
 ) -> None:
     print("Fetching Polymarket markets...")
-    markets = get_polymarket_markets(limit=limit, offset=offset, closed=closed, proxies=proxies)
-    btc_markets = filter_btc_markets(markets)
-    print(f"Found {len(markets)} markets; {len(btc_markets)} matched Bitcoin keywords")
+
+    def log_page(page: int, batch_size: int) -> None:
+        print(f"  Page {page + 1}: {batch_size} rows")
+
+    markets = get_all_polymarket_markets(
+        limit=limit,
+        offset=offset,
+        closed=closed,
+        proxies=proxies,
+        max_pages=pages,
+        on_page=log_page,
+    )
+
+    deduped = {market.get("id", f"idx-{i}"): market for i, market in enumerate(markets)}
+    btc_markets = filter_btc_markets(deduped.values())
+    print(
+        f"Fetched {len(markets)} markets across {pages or 'all'} pages; "
+        f"{len(btc_markets)} matched Bitcoin keywords"
+    )
     write_csv(output, btc_markets)
     print(f"Saved {len(btc_markets)} BTC-related markets to {output}")
 
@@ -63,8 +80,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pair", default="XBTUSD", help="Kraken pair code (default: XBTUSD)")
     parser.add_argument("--interval", type=int, default=60, help="Kraken OHLC interval in minutes")
     parser.add_argument("--since", type=int, default=None, help="Unix timestamp to fetch data since (seconds)")
-    parser.add_argument("--limit", type=int, default=500, help="Polymarket markets limit")
-    parser.add_argument("--offset", type=int, default=0, help="Polymarket markets offset")
+    parser.add_argument("--limit", type=int, default=500, help="Polymarket markets page size")
+    parser.add_argument("--offset", type=int, default=0, help="Polymarket markets starting offset")
+    parser.add_argument(
+        "--pages",
+        type=int,
+        default=4,
+        help="Maximum Polymarket pages to fetch (set 0 for all pages until empty)",
+    )
     parser.add_argument("--closed", type=str, choices=["true", "false"], default=None, help="Filter Polymarket markets by closed status")
     parser.add_argument(
         "--disable-proxies",
@@ -110,6 +133,7 @@ def main() -> int:
         fetch_and_save_polymarket(
             limit=args.limit,
             offset=args.offset,
+            pages=None if args.pages == 0 else args.pages,
             closed=closed_flag,
             proxies=proxies,
             output=args.polymarket_output,
