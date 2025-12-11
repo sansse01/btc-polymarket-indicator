@@ -286,8 +286,8 @@ def compute_correlations(
 ) -> Tuple[pd.Series, dict, pd.DataFrame]:
     """Compute base, rolling, and lagged correlations."""
 
-    btc_returns = btc_prices.pct_change().dropna()
-    poly_changes = polymarket_probs.pct_change().dropna()
+    btc_returns = btc_prices.pct_change(fill_method=None).dropna()
+    poly_changes = polymarket_probs.pct_change(fill_method=None).dropna()
     combined = pd.concat([btc_returns.rename("btc_returns"), poly_changes.rename("poly_changes")], axis=1).dropna()
 
     if combined.empty:
@@ -324,6 +324,41 @@ def compute_correlations(
     lag_df = pd.DataFrame(lag_corrs, columns=["lag", "correlation"]).set_index("lag")
 
     return pd.Series({"pearson": base_correlation}), rolling, lag_df
+
+
+def plot_polymarket_alignment(
+    raw_probs: pd.Series,
+    aligned_probs: pd.Series,
+    target_index: pd.DatetimeIndex,
+    interval_minutes: int,
+    output_path: Path,
+) -> None:
+    """Visualize raw Polymarket snapshots against the aligned series.
+
+    This highlights how sparse exports land on the Kraken grid and whether gaps
+    remain before correlation is attempted.
+    """
+
+    fig, (ax_raw, ax_aligned) = plt.subplots(2, 1, figsize=(10, 6), sharex=False)
+
+    ax_raw.plot(raw_probs.index, raw_probs, "o", label="Raw Polymarket snapshots", markersize=3)
+    ax_raw.set_title("Raw Polymarket probabilities")
+    ax_raw.set_ylabel("Probability")
+    ax_raw.legend()
+
+    ax_aligned.plot(target_index, aligned_probs, label="Aligned to Kraken grid")
+    ax_aligned.set_title(
+        "Polymarket probabilities aligned to Kraken timestamps "
+        f"({interval_minutes}-minute grid)"
+    )
+    ax_aligned.set_ylabel("Probability")
+    ax_aligned.set_xlabel("Time")
+    ax_aligned.legend()
+
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path)
+    plt.close(fig)
 
 
 def plot_price_overlay(
@@ -462,6 +497,12 @@ def run_visualization(args: argparse.Namespace) -> None:
     interval_minutes = infer_interval_minutes(kraken_df.index)
 
     aligned_poly = resample_polymarket(polymarket_df["probability"], kraken_df.index, interval_minutes)
+    overlap_points = aligned_poly.notna().sum()
+    total_points = len(aligned_poly)
+    print(
+        f"Aligned Polymarket samples on Kraken grid: {overlap_points}/{total_points} "
+        f"({overlap_points / total_points:.0%} coverage)"
+    )
     pearson, rolling, lag_df = compute_correlations(
         btc_prices=kraken_df["close"],
         polymarket_probs=aligned_poly,
@@ -472,10 +513,12 @@ def run_visualization(args: argparse.Namespace) -> None:
 
     args.plots_dir.mkdir(parents=True, exist_ok=True)
     overlay_path = args.plots_dir / "price_probability_overlay.png"
+    poly_alignment_path = args.plots_dir / "polymarket_alignment.png"
     rolling_path = args.plots_dir / "rolling_correlation.png"
     lag_path = args.plots_dir / "lag_correlation.png"
 
     plot_price_overlay(kraken_df["close"], aligned_poly, overlay_path)
+    plot_polymarket_alignment(polymarket_df["probability"], aligned_poly, kraken_df.index, interval_minutes, poly_alignment_path)
     plot_rolling_correlation(rolling, rolling_path)
     plot_lag_correlation(lag_df, interval_minutes, lag_path)
 
@@ -496,6 +539,11 @@ def run_visualization(args: argparse.Namespace) -> None:
     if best_lag is not None:
         direction = "Polymarket leads" if best_lag > 0 else "BTC leads" if best_lag < 0 else "In sync"
         print(f"  Strongest lag correlation at {best_lag} intervals ({direction}) -> {lag_df.loc[best_lag, 'correlation']:.4f}")
+    elif lag_df.empty or lag_df["correlation"].isna().all():
+        print(
+            "  No lag correlation computed because aligned series share no overlapping return windows. "
+            "Check polymarket_alignment.png to confirm timestamps overlap the Kraken grid."
+        )
 
     print(f"Plots saved to {args.plots_dir}")
 
